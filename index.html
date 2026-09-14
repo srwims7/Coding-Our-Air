@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Philadelphia County Air Emissions</title>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.6.0/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.6.0/dist/leaflet.css"/>
+<style>
+body { margin:0; padding:0; font-family:Arial,sans-serif; }
+#topbar {
+  background:#fff; padding:7px 16px; border-bottom:1px solid #ccc;
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+}
+#topbar h2 { margin:0; font-size:1rem; color:#333; white-space:nowrap; }
+#note {
+  font-size:0.72rem; color:#777; flex:1;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+#map { width:100%; height:calc(100vh - 42px); position:relative; }
+
+.map-panel {
+  position:absolute; z-index:1000; background:white;
+  border:2px solid rgba(0,0,0,0.2); border-radius:6px;
+  box-shadow:0 2px 8px rgba(0,0,0,0.22);
+}
+.panel-header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:7px 11px; cursor:pointer; user-select:none;
+  border-bottom:1px solid #e8e8e8;
+}
+.panel-header h4 {
+  margin:0; font-size:0.72rem; text-transform:uppercase;
+  letter-spacing:0.07em; color:#444;
+}
+.toggle-arrow { font-size:0.65rem; color:#888; margin-left:8px; transition:transform 0.2s; }
+.toggle-arrow.collapsed { transform:rotate(-90deg); }
+.panel-body { overflow:hidden; transition:max-height 0.25s ease, padding 0.25s ease; }
+.panel-body.open { max-height:400px; }
+.panel-body.closed { max-height:0; padding-top:0; padding-bottom:0; }
+
+#controls-panel { top:10px; right:10px; min-width:160px; }
+#controls-body { padding:10px 12px; }
+.ctrl-label {
+  font-size:0.65rem; font-weight:bold; text-transform:uppercase;
+  letter-spacing:0.08em; color:#555; margin-bottom:4px; display:block;
+}
+#year-select {
+  font-size:0.95rem; font-weight:bold; color:#222; border:1px solid #bbb;
+  border-radius:4px; padding:3px 6px; cursor:pointer; background:#fff;
+  width:100%; margin-bottom:10px;
+}
+.divider { height:1px; background:#eee; margin:8px 0; }
+#pollutant-list { display:flex; flex-direction:column; gap:5px; }
+#pollutant-list label {
+  font-size:0.78rem; cursor:pointer; display:flex; align-items:center;
+  gap:6px; color:#333;
+}
+#pollutant-list input { cursor:pointer; margin:0; }
+#year-count { font-size:0.65rem; color:#888; font-style:italic; margin-top:8px; display:block; }
+
+#legend-panel { bottom:24px; left:10px; min-width:145px; }
+#legend-body { padding:8px 12px 10px; }
+.legend-row { display:flex; align-items:center; gap:8px; margin-bottom:5px; font-size:0.72rem; color:#333; }
+.legend-dot { width:13px; height:13px; border-radius:50%; flex-shrink:0; border:1.5px solid rgba(0,0,0,0.2); }
+
+#loading-note { font-size:0.7rem; color:#999; font-style:italic; margin-top:6px; display:none; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h2>Philadelphia County Air Emissions</h2>
+  <div id="note">
+    2010&ndash;2019: PA DEP reported data &nbsp;|&nbsp;
+    2020&ndash;2023: estimated from GHGRP trends (2020 reflects PES refinery closure &amp; COVID) &nbsp;|&nbsp;
+    Colors = emission rank: <span style="color:darkred;">&#9679;</span> highest &rarr; <span style="color:#bbb;">&#9679;</span> lowest
+  </div>
+</div>
+
+<div id="map">
+  <div id="controls-panel" class="map-panel">
+    <div class="panel-header" onclick="togglePanel('controls')">
+      <h4>&#9881; Year &amp; Pollutants</h4>
+      <span class="toggle-arrow" id="controls-arrow">&#9660;</span>
+    </div>
+    <div class="panel-body open" id="controls-body">
+      <span class="ctrl-label">Year</span>
+      <select id="year-select" onchange="render()"></select>
+      <div class="divider"></div>
+      <span class="ctrl-label">Pollutants</span>
+      <div id="pollutant-list"></div>
+      <span id="year-count"></span>
+      <span id="loading-note">loading...</span>
+    </div>
+  </div>
+
+  <div id="legend-panel" class="map-panel">
+    <div class="panel-header" onclick="togglePanel('legend')">
+      <h4>&#9679; Emission Rank</h4>
+      <span class="toggle-arrow" id="legend-arrow">&#9660;</span>
+    </div>
+    <div class="panel-body open" id="legend-body">
+      <div class="legend-row"><div class="legend-dot" style="background:darkred;"></div>Highest</div>
+      <div class="legend-row"><div class="legend-dot" style="background:red;"></div>Very High</div>
+      <div class="legend-row"><div class="legend-dot" style="background:orange;"></div>High</div>
+      <div class="legend-row"><div class="legend-dot" style="background:pink;"></div>Moderate</div>
+      <div class="legend-row"><div class="legend-dot" style="background:#d9b99b;"></div>Low-Moderate</div>
+      <div class="legend-row"><div class="legend-dot" style="background:gray;"></div>Low</div>
+      <div class="legend-row"><div class="legend-dot" style="background:#bbb;"></div>Very Low</div>
+      <div class="legend-row"><div class="legend-dot" style="background:#444;"></div>Lowest</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- config ----
+const POLLUTANTS = ["Carbon Dioxide", "Methane", "Nitrous Oxide", "Biogenic CO2"];
+const RANK_COLORS = ["darkred", "red", "orange", "pink", "#d9b99b", "gray", "#bbb", "#444"];
+
+// ---- state ----
+const yearCache = {};      // year -> array of records, filled in lazily on first request
+let markerLayer = null;
+let map = null;
+
+async function loadManifest() {
+  const res = await fetch("data/manifest.json");
+  return res.json();
+}
+
+async function loadYear(year) {
+  if (yearCache[year]) return yearCache[year];
+  document.getElementById("loading-note").style.display = "block";
+  const res = await fetch(`data/${year}.json`);
+  const rows = await res.json();
+  yearCache[year] = rows;
+  document.getElementById("loading-note").style.display = "none";
+  return rows;
+}
+
+function togglePanel(name) {
+  const body = document.getElementById(`${name}-body`);
+  const arrow = document.getElementById(`${name}-arrow`);
+  const isOpen = body.classList.contains("open");
+  body.classList.toggle("open", !isOpen);
+  body.classList.toggle("closed", isOpen);
+  arrow.classList.toggle("collapsed", !isOpen);
+}
+
+function checkedPollutants() {
+  return POLLUTANTS.filter(
+    p => document.getElementById(`poll-${p}`).checked
+  );
+}
+
+function colorForRank(index, total) {
+  // splits the currently-displayed points into 8 buckets by rank,
+  // same idea as before: highest emitters always darkred regardless of year
+  const bucket = Math.min(
+    RANK_COLORS.length - 1,
+    Math.floor((index / total) * RANK_COLORS.length)
+  );
+  return RANK_COLORS[bucket];
+}
+
+async function render() {
+  const year = document.getElementById("year-select").value;
+  const rows = await loadYear(year);
+  const active = new Set(checkedPollutants());
+
+  const filtered = rows
+    .filter(r => active.has(r.pollutant))
+    .sort((a, b) => b.tons - a.tons);
+
+  if (markerLayer) map.removeLayer(markerLayer);
+  markerLayer = L.layerGroup();
+
+  filtered.forEach((r, i) => {
+    const color = colorForRank(i, filtered.length);
+    L.circleMarker([r.lat, r.lon], {
+      radius: 6,
+      color: color,
+      fillColor: color,
+      fillOpacity: 0.75,
+      weight: 1
+    })
+      .bindPopup(`<b>${r.facility}</b><br>${r.pollutant}: ${r.tons.toLocaleString()} tons`)
+      .addTo(markerLayer);
+  });
+
+  markerLayer.addTo(map);
+  document.getElementById("year-count").textContent =
+    `${filtered.length} facility readings shown for ${year}`;
+}
+
+async function init() {
+  map = L.map("map").setView([39.9526, -75.1652], 11);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(map);
+
+  const years = await loadManifest();
+  const yearSelect = document.getElementById("year-select");
+  years.forEach(y => {
+    const opt = document.createElement("option");
+    opt.value = y;
+    opt.textContent = y;
+    yearSelect.appendChild(opt);
+  });
+  yearSelect.value = years[years.length - 1]; // default to most recent year
+
+  const pollList = document.getElementById("pollutant-list");
+  POLLUTANTS.forEach(p => {
+    const label = document.createElement("label");
+    label.innerHTML = `<input type="checkbox" id="poll-${p}" checked onchange="render()"> ${p}`;
+    pollList.appendChild(label);
+  });
+
+  render();
+}
+
+init();
+</script>
+</body>
+</html>
